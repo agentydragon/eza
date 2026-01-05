@@ -99,6 +99,91 @@ struct CollapsedChain {
     depth_traversed: usize,
 }
 
+/// Configuration for rendering leaf directories as horizontal tables.
+/// Used when --table-leaves is active.
+#[derive(Debug, Clone)]
+struct LeafTableConfig {
+    /// Width of each column in the grid layout.
+    /// All leaf tables share the same column widths for alignment.
+    column_widths: Vec<usize>,
+    /// Minimum spacing between columns.
+    column_spacing: usize,
+}
+
+impl LeafTableConfig {
+    /// Calculate column widths from all leaf directory contents.
+    /// This ensures consistent column positions across all leaf tables.
+    fn from_leaf_files(all_leaf_files: &[Vec<usize>], available_width: usize) -> Self {
+        let column_spacing = 2; // Standard 2-space gap between columns
+
+        if all_leaf_files.is_empty() {
+            return Self {
+                column_widths: vec![],
+                column_spacing,
+            };
+        }
+
+        // Find the maximum number of files in any leaf directory
+        let max_files = all_leaf_files.iter().map(|f| f.len()).max().unwrap_or(0);
+        if max_files == 0 {
+            return Self {
+                column_widths: vec![],
+                column_spacing,
+            };
+        }
+
+        // Calculate how many columns can fit
+        // Start with the widest single file to determine minimum column width
+        let max_single_width = all_leaf_files
+            .iter()
+            .flat_map(|files| files.iter())
+            .max()
+            .copied()
+            .unwrap_or(1);
+
+        // Determine number of columns that fit
+        let mut num_cols = 1;
+        let mut test_cols = 2;
+        while test_cols <= max_files {
+            // Calculate total width needed for test_cols columns
+            let total_width = max_single_width * test_cols + column_spacing * (test_cols - 1);
+            if total_width <= available_width {
+                num_cols = test_cols;
+                test_cols += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Now calculate actual column widths based on position
+        // Column i holds items at positions i, i+num_cols, i+2*num_cols, etc.
+        let mut column_widths = vec![0usize; num_cols];
+        for files in all_leaf_files {
+            for (idx, &width) in files.iter().enumerate() {
+                let col = idx % num_cols;
+                column_widths[col] = column_widths[col].max(width);
+            }
+        }
+
+        Self {
+            column_widths,
+            column_spacing,
+        }
+    }
+
+    /// Get the total width of one grid row.
+    /// Currently unused but kept for potential future use in width calculations.
+    #[allow(dead_code)]
+    fn row_width(&self) -> usize {
+        if self.column_widths.is_empty() {
+            0
+        } else {
+            self.column_widths.iter().sum::<usize>()
+                + self.column_spacing * (self.column_widths.len() - 1)
+        }
+    }
+}
+
 /// With the **Details** view, the output gets formatted into columns, with
 /// each `Column` object showing some piece of information about the file,
 /// such as its size, or its permissions.
@@ -189,6 +274,20 @@ impl<'a> Render<'a> {
             self.recurse,
         );
 
+        // First pass: collect leaf file widths for --table-leaves (if enabled)
+        // This allows consistent column alignment across all leaf tables
+        // Table leaves is disabled in --long mode (when table is present)
+        let table_leaves_active = self.recurse.map(|r| r.table_leaves).unwrap_or(false)
+            && self.opts.table.is_none();
+        let leaf_config = if table_leaves_active {
+            let leaf_widths = self.collect_leaf_file_widths(&self.files, TreeDepth::root());
+            // Use 80 as default available width; actual tree indent will reduce this
+            let available_width = 60; // Conservative estimate for leaf table content
+            Some(LeafTableConfig::from_leaf_files(&leaf_widths, available_width))
+        } else {
+            None
+        };
+
         if let Some(ref table) = self.opts.table {
             match (self.git, self.dir) {
                 (Some(g), Some(d)) => {
@@ -212,7 +311,7 @@ impl<'a> Render<'a> {
                 rows.push(self.render_header(header));
             }
 
-            // This is weird, but I can’t find a way around it:
+            // This is weird, but I can't find a way around it:
             // https://internals.rust-lang.org/t/should-option-mut-t-implement-copy/3715/6
             let mut table = Some(table);
             self.add_files_to_table(
@@ -221,6 +320,7 @@ impl<'a> Render<'a> {
                 &self.files,
                 TreeDepth::root(),
                 color_scale_info,
+                leaf_config.as_ref(),
             );
 
             for row in self.iterate_with_table(table.unwrap(), rows) {
@@ -233,6 +333,7 @@ impl<'a> Render<'a> {
                 &self.files,
                 TreeDepth::root(),
                 color_scale_info,
+                leaf_config.as_ref(),
             );
 
             for row in self.iterate(rows) {
@@ -265,6 +366,7 @@ impl<'a> Render<'a> {
         src: &[File<'dir>],
         depth: TreeDepth,
         color_scale_info: Option<ColorScaleInformation>,
+        leaf_config: Option<&LeafTableConfig>,
     ) {
         use crate::fs::feature::xattr;
 
@@ -440,7 +542,60 @@ impl<'a> Render<'a> {
                         ));
                     }
 
-                    self.add_files_to_table(table, rows, &files, visual_depth, color_scale_info);
+                    // Check if this is a leaf directory and --table-leaves is enabled
+                    let table_leaves_enabled = self
+                        .recurse
+                        .map(|r| r.table_leaves)
+                        .unwrap_or(false);
+
+                    if table_leaves_enabled
+                        && leaf_config.is_some()
+                        && self.is_leaf_directory(&files)
+                    {
+                        // Render leaf directory as horizontal table
+                        self.filter.sort_files(&mut files);
+                        let config = leaf_config.unwrap();
+
+                        // Split files into rows based on column count
+                        let num_cols = config.column_widths.len().max(1);
+                        let mut file_idx = 0;
+
+                        while file_idx < files.len() {
+                            let row_files: Vec<_> = files
+                                .iter()
+                                .skip(file_idx)
+                                .take(num_cols)
+                                .collect();
+
+                            let _is_first_row = file_idx == 0;
+                            let is_last_row = file_idx + num_cols >= files.len();
+
+                            // Create the grid row content
+                            let grid_content =
+                                self.render_leaf_grid_row(&row_files, config);
+
+                            // Create row with appropriate tree params
+                            let tree_params = TreeParams::new(visual_depth, is_last_row);
+                            let row = Row {
+                                tree: tree_params,
+                                cells: None, // No table cells for leaf grid
+                                name: grid_content,
+                            };
+                            rows.push(row);
+
+                            file_idx += num_cols;
+                        }
+                    } else {
+                        // Normal recursive rendering
+                        self.add_files_to_table(
+                            table,
+                            rows,
+                            &files,
+                            visual_depth,
+                            color_scale_info,
+                            leaf_config,
+                        );
+                    }
                     continue;
                 }
             }
@@ -655,6 +810,142 @@ impl<'a> Render<'a> {
             contents: bits.into(),
             width: crate::output::cell::DisplayWidth::from(total_width),
         }
+    }
+
+    /// Check if a list of files represents a "leaf" directory - one containing
+    /// only files (no subdirectories). Used for --table-leaves rendering.
+    fn is_leaf_directory(&self, files: &[File<'_>]) -> bool {
+        // A leaf directory has at least one file and no directories
+        !files.is_empty()
+            && !files.iter().any(|f| {
+                // Check if it's a directory (but not a symlink to a directory)
+                f.is_directory() && !f.is_link()
+            })
+    }
+
+    /// Render a leaf directory's files as a horizontal grid row.
+    /// Returns a TextCell containing all files formatted in columns.
+    /// Currently unused but kept for potential alternative rendering paths.
+    #[allow(dead_code)]
+    fn render_leaf_table_row(
+        &self,
+        files: &[File<'_>],
+        config: &LeafTableConfig,
+        _first_row: bool,
+    ) -> TextCell {
+        let mut result = TextCell::default();
+
+        for (idx, file) in files.iter().enumerate() {
+            // Get the rendered file name
+            let file_name = self.file_style.for_file(file, self.theme).paint();
+            let name_width = *file_name.width();
+
+            // Append the file name
+            result.append(file_name.promote());
+
+            // Add padding to reach column width (except for last item in row)
+            let col = idx % config.column_widths.len().max(1);
+            let col_width = config.column_widths.get(col).copied().unwrap_or(name_width);
+
+            if idx < files.len() - 1 {
+                let padding = col_width.saturating_sub(name_width) + config.column_spacing;
+                if padding > 0 {
+                    result.add_spaces(padding);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Render a row of the leaf grid (used when files are split across multiple rows).
+    fn render_leaf_grid_row(&self, files: &[&File<'_>], config: &LeafTableConfig) -> TextCell {
+        let mut result = TextCell::default();
+
+        for (idx, file) in files.iter().enumerate() {
+            // Get the rendered file name
+            let file_name = self.file_style.for_file(file, self.theme).paint();
+            let name_width = *file_name.width();
+
+            // Append the file name
+            result.append(file_name.promote());
+
+            // Add padding to reach column width (except for last item in row)
+            let col = idx % config.column_widths.len().max(1);
+            let col_width = config.column_widths.get(col).copied().unwrap_or(name_width);
+
+            if idx < files.len() - 1 {
+                let padding = col_width.saturating_sub(name_width) + config.column_spacing;
+                if padding > 0 {
+                    result.add_spaces(padding);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Collect file name widths from all leaf directories for global column calculation.
+    /// This is the first pass of two-pass rendering for --table-leaves.
+    fn collect_leaf_file_widths<'dir>(
+        &self,
+        src: &[File<'dir>],
+        depth: TreeDepth,
+    ) -> Vec<Vec<usize>> {
+        let mut all_widths = Vec::new();
+
+        let recurse = match self.recurse {
+            Some(r) if r.table_leaves => r,
+            _ => return all_widths,
+        };
+
+        for file in src {
+            if !file.is_directory() || file.is_link() {
+                continue;
+            }
+
+            if recurse.is_too_deep(depth.0) {
+                continue;
+            }
+
+            // Try to read the directory
+            let dir = match file.read_dir() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            // Get files in this directory
+            let mut files: Vec<File<'_>> = dir
+                .files(
+                    self.filter.dot_filter,
+                    self.git,
+                    self.git_ignoring,
+                    file.deref_links,
+                    file.is_recursive_size(),
+                )
+                .collect();
+
+            self.filter
+                .filter_child_files(self.recurse.is_some(), &mut files);
+
+            if self.is_leaf_directory(&files) {
+                // Collect widths for this leaf directory
+                let widths: Vec<usize> = files
+                    .iter()
+                    .map(|f| {
+                        let name = self.file_style.for_file(f, self.theme).paint();
+                        *name.width()
+                    })
+                    .collect();
+                all_widths.push(widths);
+            } else {
+                // Recurse into subdirectories
+                let sub_widths = self.collect_leaf_file_widths(&files, depth.deeper());
+                all_widths.extend(sub_widths);
+            }
+        }
+
+        all_widths
     }
 
     #[must_use]

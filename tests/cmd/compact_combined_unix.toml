@@ -1,0 +1,2 @@
+bin.name = "eza"
+args = "-T --collapse-single --table-leaves tests/compact/combined"
