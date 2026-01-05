@@ -114,7 +114,7 @@ impl LeafTableConfig {
     /// Calculate column widths from all leaf directory contents.
     /// This ensures consistent column positions across all leaf tables.
     fn from_leaf_files(all_leaf_files: &[Vec<usize>], available_width: usize) -> Self {
-        let column_spacing = 2; // Standard 2-space gap between columns
+        let column_spacing = 1; // Match tree connector's trailing space
 
         if all_leaf_files.is_empty() {
             return Self {
@@ -168,18 +168,6 @@ impl LeafTableConfig {
         Self {
             column_widths,
             column_spacing,
-        }
-    }
-
-    /// Get the total width of one grid row.
-    /// Currently unused but kept for potential future use in width calculations.
-    #[allow(dead_code)]
-    fn row_width(&self) -> usize {
-        if self.column_widths.is_empty() {
-            0
-        } else {
-            self.column_widths.iter().sum::<usize>()
-                + self.column_spacing * (self.column_widths.len() - 1)
         }
     }
 }
@@ -567,7 +555,6 @@ impl<'a> Render<'a> {
                                 .take(num_cols)
                                 .collect();
 
-                            let _is_first_row = file_idx == 0;
                             let is_last_row = file_idx + num_cols >= files.len();
 
                             // Create the grid row content
@@ -823,41 +810,6 @@ impl<'a> Render<'a> {
             })
     }
 
-    /// Render a leaf directory's files as a horizontal grid row.
-    /// Returns a TextCell containing all files formatted in columns.
-    /// Currently unused but kept for potential alternative rendering paths.
-    #[allow(dead_code)]
-    fn render_leaf_table_row(
-        &self,
-        files: &[File<'_>],
-        config: &LeafTableConfig,
-        _first_row: bool,
-    ) -> TextCell {
-        let mut result = TextCell::default();
-
-        for (idx, file) in files.iter().enumerate() {
-            // Get the rendered file name
-            let file_name = self.file_style.for_file(file, self.theme).paint();
-            let name_width = *file_name.width();
-
-            // Append the file name
-            result.append(file_name.promote());
-
-            // Add padding to reach column width (except for last item in row)
-            let col = idx % config.column_widths.len().max(1);
-            let col_width = config.column_widths.get(col).copied().unwrap_or(name_width);
-
-            if idx < files.len() - 1 {
-                let padding = col_width.saturating_sub(name_width) + config.column_spacing;
-                if padding > 0 {
-                    result.add_spaces(padding);
-                }
-            }
-        }
-
-        result
-    }
-
     /// Render a row of the leaf grid (used when files are split across multiple rows).
     fn render_leaf_grid_row(&self, files: &[&File<'_>], config: &LeafTableConfig) -> TextCell {
         let mut result = TextCell::default();
@@ -927,6 +879,7 @@ impl<'a> Render<'a> {
 
             self.filter
                 .filter_child_files(self.recurse.is_some(), &mut files);
+            self.filter.sort_files(&mut files);
 
             if self.is_leaf_directory(&files) {
                 // Collect widths for this leaf directory

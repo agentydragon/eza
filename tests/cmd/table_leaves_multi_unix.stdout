@@ -1,5 +1,5 @@
 tests/compact/leaf_multi
 ├── docs
-│   └── a.md   b.md   c.md
+│   └── a.md  b.md  c.md
 └── images
-    └── 1.png  2.png  3.png
+    └── 1.png 2.png 3.png
