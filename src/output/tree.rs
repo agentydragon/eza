@@ -160,6 +160,14 @@ impl TreeDepth {
         Self(self.0 + 1)
     }
 
+    /// Increases the depth by the given amount.
+    /// Used for collapsed directory chains where we need to skip multiple levels.
+    /// Currently unused but kept for future --level depth tracking with collapse.
+    #[allow(dead_code)]
+    pub fn deeper_by(self, levels: usize) -> Self {
+        Self(self.0 + levels)
+    }
+
     /// Creates an iterator that, as well as yielding each value, yields a
     /// `TreeParams` with the current depth and last flag filled in.
     pub fn iterate_over<I, T>(self, inner: I) -> Iter<I>

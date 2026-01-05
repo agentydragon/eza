@@ -18,6 +18,8 @@ pub static GRID:         Arg = Arg { short: Some(b'G'), long: "grid",           
 pub static ACROSS:       Arg = Arg { short: Some(b'x'), long: "across",          takes_value: TakesValue::Forbidden };
 pub static RECURSE:      Arg = Arg { short: Some(b'R'), long: "recurse",         takes_value: TakesValue::Forbidden };
 pub static TREE:         Arg = Arg { short: Some(b'T'), long: "tree",            takes_value: TakesValue::Forbidden };
+pub static COLLAPSE_SINGLE: Arg = Arg { short: None,       long: "collapse-single", takes_value: TakesValue::Forbidden };
+pub static TABLE_LEAVES:    Arg = Arg { short: None,       long: "table-leaves",    takes_value: TakesValue::Forbidden };
 pub static CLASSIFY:     Arg = Arg { short: Some(b'F'), long: "classify",        takes_value: TakesValue::Optional(Some(WHEN), "auto") };
 pub static DEREF_LINKS:  Arg = Arg { short: Some(b'X'), long: "dereference",     takes_value: TakesValue::Forbidden };
 pub static WIDTH:        Arg = Arg { short: Some(b'w'), long: "width",           takes_value: TakesValue::Necessary(None) };
@@ -101,7 +103,7 @@ pub static FILE_FLAGS:        Arg = Arg { short: Some(b'O'), long: "flags",     
 pub static ALL_ARGS: Args = Args(&[
     &VERSION, &HELP,
 
-    &ONE_LINE, &LONG, &GRID, &ACROSS, &RECURSE, &TREE, &CLASSIFY, &DEREF_LINKS, &FOLLOW_LINKS,
+    &ONE_LINE, &LONG, &GRID, &ACROSS, &RECURSE, &TREE, &COLLAPSE_SINGLE, &TABLE_LEAVES, &CLASSIFY, &DEREF_LINKS, &FOLLOW_LINKS,
     &COLOR, &COLOUR, &COLOR_SCALE, &COLOUR_SCALE, &COLOR_SCALE_MODE, &COLOUR_SCALE_MODE,
     &WIDTH, &NO_QUOTES, &ABSOLUTE,
 

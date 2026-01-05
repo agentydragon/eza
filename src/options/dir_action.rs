@@ -59,16 +59,31 @@ impl DirAction {
 
 impl RecurseOptions {
     /// Determine which files should be recursed into, based on the `--level`
-    /// flag’s value, and whether the `--tree` flag was passed, which was
+    /// flag's value, and whether the `--tree` flag was passed, which was
     /// determined earlier. The maximum level should be a number, and this
-    /// will fail with an `Err` if it isn’t.
+    /// will fail with an `Err` if it isn't.
     pub fn deduce(matches: &MatchedFlags<'_>, tree: bool) -> Result<Self, OptionsError> {
+        let collapse_single = matches.has(&flags::COLLAPSE_SINGLE)?;
+        let table_leaves = matches.has(&flags::TABLE_LEAVES)?;
+
+        // These flags only make sense with --tree
+        if matches.is_strict() && !tree {
+            if collapse_single {
+                return Err(OptionsError::Useless(&flags::COLLAPSE_SINGLE, false, &flags::TREE));
+            }
+            if table_leaves {
+                return Err(OptionsError::Useless(&flags::TABLE_LEAVES, false, &flags::TREE));
+            }
+        }
+
         if let Some(level) = matches.get(&flags::LEVEL)? {
             let arg_str = level.to_string_lossy();
             match arg_str.parse() {
                 Ok(l) => Ok(Self {
                     tree,
                     max_depth: Some(l),
+                    collapse_single,
+                    table_leaves,
                 }),
                 Err(e) => {
                     let source = NumberSource::Arg(&flags::LEVEL);
@@ -79,6 +94,8 @@ impl RecurseOptions {
             Ok(Self {
                 tree,
                 max_depth: None,
+                collapse_single,
+                table_leaves,
             })
         }
     }
@@ -122,19 +139,19 @@ mod test {
 
     // Recursing
     use self::DirAction::Recurse;
-    test!(rec_short:       DirAction <- ["-R"];                           Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: None })));
-    test!(rec_long:        DirAction <- ["--recurse"];                    Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: None })));
-    test!(rec_lim_short:   DirAction <- ["-RL4"];                         Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(4) })));
-    test!(rec_lim_short_2: DirAction <- ["-RL=5"];                        Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(5) })));
-    test!(rec_lim_long:    DirAction <- ["--recurse", "--level", "666"];  Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(666) })));
-    test!(rec_lim_long_2:  DirAction <- ["--recurse", "--level=0118"];    Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(118) })));
-    test!(tree:            DirAction <- ["--tree"];                       Both => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None })));
-    test!(rec_tree:        DirAction <- ["--recurse", "--tree"];          Both => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None })));
-    test!(rec_short_tree:  DirAction <- ["-TR"];                          Both => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None })));
+    test!(rec_short:       DirAction <- ["-R"];                           Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: None, collapse_single: false, table_leaves: false })));
+    test!(rec_long:        DirAction <- ["--recurse"];                    Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: None, collapse_single: false, table_leaves: false })));
+    test!(rec_lim_short:   DirAction <- ["-RL4"];                         Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(4), collapse_single: false, table_leaves: false })));
+    test!(rec_lim_short_2: DirAction <- ["-RL=5"];                        Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(5), collapse_single: false, table_leaves: false })));
+    test!(rec_lim_long:    DirAction <- ["--recurse", "--level", "666"];  Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(666), collapse_single: false, table_leaves: false })));
+    test!(rec_lim_long_2:  DirAction <- ["--recurse", "--level=0118"];    Both => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(118), collapse_single: false, table_leaves: false })));
+    test!(tree:            DirAction <- ["--tree"];                       Both => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None, collapse_single: false, table_leaves: false })));
+    test!(rec_tree:        DirAction <- ["--recurse", "--tree"];          Both => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None, collapse_single: false, table_leaves: false })));
+    test!(rec_short_tree:  DirAction <- ["-TR"];                          Both => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None, collapse_single: false, table_leaves: false })));
 
     // Overriding --list-dirs, --recurse, and --tree
-    test!(dirs_recurse:    DirAction <- ["--treat-dirs-as-files", "--recurse"];     Last => Ok(Recurse(RecurseOptions { tree: false, max_depth: None })));
-    test!(dirs_tree:       DirAction <- ["--treat-dirs-as-files", "--tree"];        Last => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None })));
+    test!(dirs_recurse:    DirAction <- ["--treat-dirs-as-files", "--recurse"];     Last => Ok(Recurse(RecurseOptions { tree: false, max_depth: None, collapse_single: false, table_leaves: false })));
+    test!(dirs_tree:       DirAction <- ["--treat-dirs-as-files", "--tree"];        Last => Ok(Recurse(RecurseOptions { tree: true,  max_depth: None, collapse_single: false, table_leaves: false })));
     test!(just_level:      DirAction <- ["--level=4"];                    Last => Ok(DirAction::List));
 
     test!(dirs_recurse_2:  DirAction <- ["--treat-dirs-as-files", "--recurse"]; Complain => Err(OptionsError::Conflict(&flags::RECURSE, &flags::TREAT_DIRS_AS_FILES)));
@@ -142,6 +159,6 @@ mod test {
     test!(just_level_2:    DirAction <- ["--level=4"];                Complain => Err(OptionsError::Useless2(&flags::LEVEL, &flags::RECURSE, &flags::TREE)));
 
     // Overriding levels
-    test!(overriding_1:    DirAction <- ["-RL=6", "-L=7"];                Last => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(7) })));
+    test!(overriding_1:    DirAction <- ["-RL=6", "-L=7"];                Last => Ok(Recurse(RecurseOptions { tree: false, max_depth: Some(7), collapse_single: false, table_leaves: false })));
     test!(overriding_2:    DirAction <- ["-RL=6", "-L=7"];            Complain => Err(OptionsError::Duplicate(Flag::Short(b'L'), Flag::Short(b'L'))));
 }

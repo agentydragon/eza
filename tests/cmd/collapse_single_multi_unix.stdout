@@ -1,0 +1,5 @@
+tests/compact/collapse_multi/a/b
+├── c
+│   └── file1.txt
+└── d
+    └── file2.txt

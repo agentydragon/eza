@@ -72,6 +72,14 @@ pub struct RecurseOptions {
     /// The maximum number of times that recursion should descend to, if one
     /// is specified.
     pub max_depth: Option<usize>,
+
+    /// Whether to collapse single-child directory chains in tree mode.
+    /// e.g., `a/b/c/file.txt` becomes `a/b/c` with `file.txt` as child.
+    pub collapse_single: bool,
+
+    /// Whether to display leaf directories (dirs with only files) as
+    /// horizontal tables instead of vertical lists.
+    pub table_leaves: bool,
 }
 
 impl RecurseOptions {

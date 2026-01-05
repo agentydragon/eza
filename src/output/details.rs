@@ -87,6 +87,18 @@ use crate::output::table::{Options as TableOptions, Row as TableRow, Table};
 use crate::output::tree::{TreeDepth, TreeParams, TreeTrunk};
 use crate::theme::Theme;
 
+/// Information about a collapsed directory chain.
+/// When --collapse-single is active and we have a chain like a/b/c where each
+/// directory has exactly one child directory, we collapse it into "a/b/c".
+struct CollapsedChain {
+    /// The names of directories in the collapsed chain (e.g., ["a", "b", "c"])
+    names: Vec<String>,
+    /// The final Dir at the end of the chain (c's contents)
+    final_dir: Option<Dir>,
+    /// Total depth traversed (for --level checking)
+    depth_traversed: usize,
+}
+
 /// With the **Details** view, the output gets formatted into columns, with
 /// each `Column` object showing some piece of information about the file,
 /// such as its size, or its permissions.
@@ -336,13 +348,55 @@ impl<'a> Render<'a> {
                 t.add_widths(row);
             }
 
-            let file_name = self
-                .file_style
-                .for_file(egg.file, self.theme)
-                .with_link_paths()
-                .with_mount_details(self.opts.mounts)
-                .paint()
-                .promote();
+            // Check if collapse_single is enabled
+            let collapse_enabled = self
+                .recurse
+                .map(|r| r.collapse_single)
+                .unwrap_or(false);
+
+            // Try to collapse single-child directory chains if enabled
+            let (file_name, effective_dir, _extra_depth) = if let Some(dir) = egg.dir {
+                if collapse_enabled {
+                    // Try to collapse this directory chain
+                    let chain = self.try_collapse_chain(egg.file.name.clone(), dir, depth.0);
+                    if chain.names.len() > 1 {
+                        // We have a collapsed chain - render it specially
+                        let collapsed_name = self.render_collapsed_name(&chain, egg.file);
+                        debug!("collapsed chain: {:?}", chain.names);
+                        (collapsed_name, chain.final_dir, chain.depth_traversed - 1)
+                    } else {
+                        // No collapsing happened, render normally
+                        let name = self
+                            .file_style
+                            .for_file(egg.file, self.theme)
+                            .with_link_paths()
+                            .with_mount_details(self.opts.mounts)
+                            .paint()
+                            .promote();
+                        (name, chain.final_dir, 0)
+                    }
+                } else {
+                    // collapse_single not enabled, render normally
+                    let name = self
+                        .file_style
+                        .for_file(egg.file, self.theme)
+                        .with_link_paths()
+                        .with_mount_details(self.opts.mounts)
+                        .paint()
+                        .promote();
+                    (name, Some(dir), 0)
+                }
+            } else {
+                // Not a directory, render normally
+                let name = self
+                    .file_style
+                    .for_file(egg.file, self.theme)
+                    .with_link_paths()
+                    .with_mount_details(self.opts.mounts)
+                    .paint()
+                    .promote();
+                (name, None, 0)
+            };
 
             debug!("file_name {file_name:?}");
 
@@ -354,7 +408,7 @@ impl<'a> Render<'a> {
 
             rows.push(row);
 
-            if let Some(ref dir) = egg.dir {
+            if let Some(ref dir) = effective_dir {
                 for file_to_add in dir.files(
                     self.filter.dot_filter,
                     self.git,
@@ -369,19 +423,24 @@ impl<'a> Render<'a> {
                     .filter_child_files(self.recurse.is_some(), &mut files);
 
                 if !files.is_empty() {
+                    // For visual tree depth, use depth.deeper() (one level down from current)
+                    // The extra_depth from collapsed chains is only tracked for potential
+                    // future --level checking, but visual rendering stays at depth+1
+                    let visual_depth = depth.deeper();
+
                     for xattr in egg.xattrs {
-                        rows.push(self.render_xattr(xattr, TreeParams::new(depth.deeper(), false)));
+                        rows.push(self.render_xattr(xattr, TreeParams::new(visual_depth, false)));
                     }
 
                     for (error, path) in errors {
                         rows.push(self.render_error(
                             &error,
-                            TreeParams::new(depth.deeper(), false),
+                            TreeParams::new(visual_depth, false),
                             path,
                         ));
                     }
 
-                    self.add_files_to_table(table, rows, &files, depth.deeper(), color_scale_info);
+                    self.add_files_to_table(table, rows, &files, visual_depth, color_scale_info);
                     continue;
                 }
             }
@@ -440,6 +499,161 @@ impl<'a> Render<'a> {
             cells: None,
             name,
             tree,
+        }
+    }
+
+    /// Builds a collapsed chain starting from the given directory.
+    /// Called when collapse_single is enabled. Will collapse single-child directory
+    /// chains like a/b/c where each has exactly one child directory.
+    fn try_collapse_chain(
+        &self,
+        starting_name: String,
+        starting_dir: Dir,
+        current_depth: usize,
+    ) -> CollapsedChain {
+        let recurse = match self.recurse {
+            Some(r) => r,
+            None => {
+                return CollapsedChain {
+                    names: vec![starting_name],
+                    final_dir: Some(starting_dir),
+                    depth_traversed: 1,
+                }
+            }
+        };
+
+        let mut names = vec![starting_name];
+        let mut current_dir = starting_dir;
+        let mut depth_traversed = 1;
+
+        loop {
+            // Check if we've hit the depth limit
+            if recurse.is_too_deep(current_depth + depth_traversed) {
+                break;
+            }
+
+            // Get the files in this directory
+            let files: Vec<File<'_>> = current_dir
+                .files(
+                    self.filter.dot_filter,
+                    self.git,
+                    self.git_ignoring,
+                    false, // deref_links
+                    false, // total_size
+                )
+                .collect();
+
+            // Apply filters
+            let mut filtered_files = files;
+            self.filter
+                .filter_child_files(self.recurse.is_some(), &mut filtered_files);
+
+            // Check if we have exactly one child
+            if filtered_files.len() != 1 {
+                break;
+            }
+
+            let only_child = &filtered_files[0];
+
+            // Check if the only child is a directory (not a symlink, not a file)
+            // Symlinks should stop the chain per spec
+            if only_child.is_link() || !only_child.is_directory() {
+                break;
+            }
+
+            // Try to read the child directory
+            let child_dir = match only_child.read_dir() {
+                Ok(d) => d,
+                Err(_) => break,
+            };
+
+            // Add this directory name to the chain
+            names.push(only_child.name.clone());
+            depth_traversed += 1;
+            current_dir = child_dir;
+        }
+
+        CollapsedChain {
+            names,
+            final_dir: Some(current_dir),
+            depth_traversed,
+        }
+    }
+
+    /// Renders a collapsed chain name like "a/b/c" with directory styling.
+    fn render_collapsed_name(&self, chain: &CollapsedChain, file: &File<'_>) -> TextCell {
+        use nu_ansi_term::AnsiString;
+        use unicode_width::UnicodeWidthStr;
+
+        let dir_style = self
+            .theme
+            .ui
+            .filekinds
+            .as_ref()
+            .map(|fk| fk.directory())
+            .unwrap_or_default();
+
+        // Build the collapsed path string with "/" separators
+        // If the file has no parent_dir (i.e., it's a command-line argument),
+        // we need to include the path prefix to match normal rendering
+        let collapsed_suffix = chain.names[1..].join("/");
+        let collapsed_path = if file.parent_dir.is_none() {
+            // Include the original file's path (which may include directory prefix)
+            if collapsed_suffix.is_empty() {
+                file.path.display().to_string()
+            } else {
+                format!("{}/{}", file.path.display(), collapsed_suffix)
+            }
+        } else {
+            // File is in a directory, use just the names
+            chain.names.join("/")
+        };
+
+        // Check if we should add icons
+        let mut bits: Vec<AnsiString<'_>> = Vec::new();
+        let mut total_width: usize = 0;
+
+        // Add icon if enabled (use the first directory's icon)
+        if let crate::output::file_name::ShowIcons::Always(spaces)
+        | crate::output::file_name::ShowIcons::Automatic(spaces) = self.file_style.show_icons
+        {
+            if self.file_style.is_a_tty
+                || matches!(
+                    self.file_style.show_icons,
+                    crate::output::file_name::ShowIcons::Always(_)
+                )
+            {
+                let icon = crate::output::icons::icon_for_file(file);
+                let icon_style = crate::output::icons::iconify_style(dir_style);
+                let icon_str = icon.to_string();
+                let spaces_str = " ".repeat(spaces as usize);
+                total_width += icon_str.width() + spaces_str.width();
+                bits.push(icon_style.paint(icon_str));
+                bits.push(icon_style.paint(spaces_str));
+            }
+        }
+
+        total_width += collapsed_path.width();
+        bits.push(dir_style.paint(collapsed_path));
+
+        // Add classify suffix if enabled
+        if let crate::output::file_name::Classify::AddFileIndicators
+        | crate::output::file_name::Classify::AutomaticAddFileIndicators = self.file_style.classify
+        {
+            if self.file_style.is_a_tty
+                || matches!(
+                    self.file_style.classify,
+                    crate::output::file_name::Classify::AddFileIndicators
+                )
+            {
+                total_width += 1;
+                bits.push(Style::default().paint("/"));
+            }
+        }
+
+        TextCell {
+            contents: bits.into(),
+            width: crate::output::cell::DisplayWidth::from(total_width),
         }
     }
 
