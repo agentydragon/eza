@@ -29,7 +29,7 @@ A tree display mode that reduces vertical space usage through two techniques: co
 - Preserve the tree connector (├── or └──) for the collapsed path
 - Stop collapsing at symlinks (treat symlinks as non-directories)
 - Empty directories are collapsible (single-child with no files)
-- Collapsed path ending in empty directory shows trailing slash: `a/b/c/`
+- Collapsed paths use existing directory styling (e.g., trailing slash only if `--classify` is active)
 - When `--level` is set, use physical depth (each directory component counts), not display depth
 
 ## Feature 2: Leaf Table Display
@@ -164,7 +164,7 @@ Tests must cover all edge cases using the `trycmd` framework (`tests/cmd/`).
 2. **Chain stops at multiple children**: `a/b/{c,d}/` → `a/b` with `c`, `d` children
 3. **Chain stops at files**: `a/b/file.txt` + `a/b/c/` → `a/b` with both children
 4. **Symlink stops chain**: `a/b -> target` should not be collapsed into parent
-5. **Empty directory collapse**: `a/b/c/` (all empty) → `a/b/c/` with no children (trailing slash indicates empty)
+5. **Empty directory collapse**: `a/b/c/` (all empty) → `a/b/c` with no children (uses existing directory styling)
 6. **Mixed depth chains**: Multiple chains at different depths in same tree
 7. **`--level` interaction**: `--level 2` with `a/b/c/d/file.txt` should stop at physical depth 2
 8. **Root-level single child**: Single directory at root should still show correctly
