@@ -472,7 +472,7 @@ impl Exa<'_> {
                 r.render(&mut self.writer)
             }
 
-            (Mode::Details(ref opts), _) => {
+            (Mode::Details(ref opts), console_width) => {
                 let filter = &self.options.filter;
                 let recurse = self.options.dir_action.recurse_options();
 
@@ -490,6 +490,7 @@ impl Exa<'_> {
                     git_ignoring,
                     git,
                     git_repos,
+                    console_width,
                 };
                 r.render(&mut self.writer)
             }
@@ -538,6 +539,7 @@ impl Exa<'_> {
                     git_ignoring,
                     git,
                     git_repos,
+                    console_width: None,
                 };
                 r.render(&mut self.writer)
             }

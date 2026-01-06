@@ -71,6 +71,7 @@ use std::vec::IntoIter as VecIntoIter;
 
 use nu_ansi_term::Style;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use term_grid::{Direction, Filling, Grid, GridOptions};
 
 use log::{debug, trace};
 
@@ -97,79 +98,6 @@ struct CollapsedChain {
     final_dir: Option<Dir>,
     /// Total depth traversed (for --level checking)
     depth_traversed: usize,
-}
-
-/// Configuration for rendering leaf directories as horizontal tables.
-/// Used when --table-leaves is active.
-#[derive(Debug, Clone)]
-struct LeafTableConfig {
-    /// Width of each column in the grid layout.
-    /// All leaf tables share the same column widths for alignment.
-    column_widths: Vec<usize>,
-    /// Minimum spacing between columns.
-    column_spacing: usize,
-}
-
-impl LeafTableConfig {
-    /// Calculate column widths from all leaf directory contents.
-    /// This ensures consistent column positions across all leaf tables.
-    fn from_leaf_files(all_leaf_files: &[Vec<usize>], available_width: usize) -> Self {
-        let column_spacing = 1; // Match tree connector's trailing space
-
-        if all_leaf_files.is_empty() {
-            return Self {
-                column_widths: vec![],
-                column_spacing,
-            };
-        }
-
-        // Find the maximum number of files in any leaf directory
-        let max_files = all_leaf_files.iter().map(|f| f.len()).max().unwrap_or(0);
-        if max_files == 0 {
-            return Self {
-                column_widths: vec![],
-                column_spacing,
-            };
-        }
-
-        // Calculate how many columns can fit
-        // Start with the widest single file to determine minimum column width
-        let max_single_width = all_leaf_files
-            .iter()
-            .flat_map(|files| files.iter())
-            .max()
-            .copied()
-            .unwrap_or(1);
-
-        // Determine number of columns that fit
-        let mut num_cols = 1;
-        let mut test_cols = 2;
-        while test_cols <= max_files {
-            // Calculate total width needed for test_cols columns
-            let total_width = max_single_width * test_cols + column_spacing * (test_cols - 1);
-            if total_width <= available_width {
-                num_cols = test_cols;
-                test_cols += 1;
-            } else {
-                break;
-            }
-        }
-
-        // Now calculate actual column widths based on position
-        // Column i holds items at positions i, i+num_cols, i+2*num_cols, etc.
-        let mut column_widths = vec![0usize; num_cols];
-        for files in all_leaf_files {
-            for (idx, &width) in files.iter().enumerate() {
-                let col = idx % num_cols;
-                column_widths[col] = column_widths[col].max(width);
-            }
-        }
-
-        Self {
-            column_widths,
-            column_spacing,
-        }
-    }
 }
 
 /// With the **Details** view, the output gets formatted into columns, with
@@ -232,6 +160,9 @@ pub struct Render<'a> {
     pub git: Option<&'a GitCache>,
 
     pub git_repos: bool,
+
+    /// Terminal width for grid layout in --table-leaves mode
+    pub console_width: Option<usize>,
 }
 
 #[rustfmt::skip]
@@ -261,20 +192,6 @@ impl<'a> Render<'a> {
             self.git_ignoring,
             self.recurse,
         );
-
-        // First pass: collect leaf file widths for --table-leaves (if enabled)
-        // This allows consistent column alignment across all leaf tables
-        // Table leaves is disabled in --long mode (when table is present)
-        let table_leaves_active = self.recurse.map(|r| r.table_leaves).unwrap_or(false)
-            && self.opts.table.is_none();
-        let leaf_config = if table_leaves_active {
-            let leaf_widths = self.collect_leaf_file_widths(&self.files, TreeDepth::root());
-            // Use 80 as default available width; actual tree indent will reduce this
-            let available_width = 60; // Conservative estimate for leaf table content
-            Some(LeafTableConfig::from_leaf_files(&leaf_widths, available_width))
-        } else {
-            None
-        };
 
         if let Some(ref table) = self.opts.table {
             match (self.git, self.dir) {
@@ -308,7 +225,6 @@ impl<'a> Render<'a> {
                 &self.files,
                 TreeDepth::root(),
                 color_scale_info,
-                leaf_config.as_ref(),
             );
 
             for row in self.iterate_with_table(table.unwrap(), rows) {
@@ -321,7 +237,6 @@ impl<'a> Render<'a> {
                 &self.files,
                 TreeDepth::root(),
                 color_scale_info,
-                leaf_config.as_ref(),
             );
 
             for row in self.iterate(rows) {
@@ -354,7 +269,6 @@ impl<'a> Render<'a> {
         src: &[File<'dir>],
         depth: TreeDepth,
         color_scale_info: Option<ColorScaleInformation>,
-        leaf_config: Option<&LeafTableConfig>,
     ) {
         use crate::fs::feature::xattr;
 
@@ -362,28 +276,6 @@ impl<'a> Render<'a> {
             .par_iter()
             .map(|file| {
                 let mut errors = Vec::new();
-
-                // There are three “levels” of extended attribute support:
-                //
-                // 1. If we’re compiling without that feature, then
-                //    exa pretends all files have no attributes.
-                // 2. If the feature is enabled and the --extended flag
-                //    has been specified, then display an @ in the
-                //    permissions column for files with attributes, the
-                //    names of all attributes and their values, and any
-                //    errors encountered when getting them.
-                // 3. If the --extended flag *hasn’t* been specified, then
-                //    display the @, but don’t display anything else.
-                //
-                // For a while, exa took a stricter approach to (3):
-                // if an error occurred while checking a file’s xattrs to
-                // see if it should display the @, exa would display that
-                // error even though the attributes weren’t actually being
-                // shown! This was confusing, as users were being shown
-                // errors for something they didn’t explicitly ask for,
-                // and just cluttered up the output. So now errors aren’t
-                // printed unless the user passes --extended to signify
-                // that they want to see them.
 
                 let xattrs: &[Attribute] = if xattr::ENABLED && self.opts.xattr {
                     file.extended_attributes()
@@ -430,6 +322,31 @@ impl<'a> Render<'a> {
         // this is safe because all entries have been initialized above
         self.filter.sort_files(&mut file_eggs);
 
+        // Check if table_leaves is enabled (and we're not in --long mode)
+        let table_leaves_enabled = self
+            .recurse
+            .map(|r| r.table_leaves)
+            .unwrap_or(false)
+            && self.opts.table.is_none();
+
+        if table_leaves_enabled {
+            // New grouping logic: group consecutive files into grids
+            self.add_files_grouped(table, rows, file_eggs, depth, color_scale_info);
+        } else {
+            // Original per-entry logic
+            self.add_files_individually(table, rows, file_eggs, depth, color_scale_info);
+        }
+    }
+
+    /// Original rendering logic: each file/directory rendered individually
+    fn add_files_individually<'dir>(
+        &self,
+        table: &mut Option<Table<'a>>,
+        rows: &mut Vec<Row>,
+        file_eggs: Vec<Egg<'dir>>,
+        depth: TreeDepth,
+        color_scale_info: Option<ColorScaleInformation>,
+    ) {
         for (tree_params, egg) in depth.iterate_over(file_eggs.into_iter()) {
             let mut files = Vec::new();
             let errors = egg.errors;
@@ -447,15 +364,12 @@ impl<'a> Render<'a> {
             // Try to collapse single-child directory chains if enabled
             let (file_name, effective_dir, _extra_depth) = if let Some(dir) = egg.dir {
                 if collapse_enabled {
-                    // Try to collapse this directory chain
                     let chain = self.try_collapse_chain(egg.file.name.clone(), dir, depth.0);
                     if chain.names.len() > 1 {
-                        // We have a collapsed chain - render it specially
                         let collapsed_name = self.render_collapsed_name(&chain, egg.file);
                         debug!("collapsed chain: {:?}", chain.names);
                         (collapsed_name, chain.final_dir, chain.depth_traversed - 1)
                     } else {
-                        // No collapsing happened, render normally
                         let name = self
                             .file_style
                             .for_file(egg.file, self.theme)
@@ -466,7 +380,6 @@ impl<'a> Render<'a> {
                         (name, chain.final_dir, 0)
                     }
                 } else {
-                    // collapse_single not enabled, render normally
                     let name = self
                         .file_style
                         .for_file(egg.file, self.theme)
@@ -477,7 +390,6 @@ impl<'a> Render<'a> {
                     (name, Some(dir), 0)
                 }
             } else {
-                // Not a directory, render normally
                 let name = self
                     .file_style
                     .for_file(egg.file, self.theme)
@@ -513,9 +425,6 @@ impl<'a> Render<'a> {
                     .filter_child_files(self.recurse.is_some(), &mut files);
 
                 if !files.is_empty() {
-                    // For visual tree depth, use depth.deeper() (one level down from current)
-                    // The extra_depth from collapsed chains is only tracked for potential
-                    // future --level checking, but visual rendering stays at depth+1
                     let visual_depth = depth.deeper();
 
                     for xattr in egg.xattrs {
@@ -530,59 +439,7 @@ impl<'a> Render<'a> {
                         ));
                     }
 
-                    // Check if this is a leaf directory and --table-leaves is enabled
-                    let table_leaves_enabled = self
-                        .recurse
-                        .map(|r| r.table_leaves)
-                        .unwrap_or(false);
-
-                    if table_leaves_enabled
-                        && leaf_config.is_some()
-                        && self.is_leaf_directory(&files)
-                    {
-                        // Render leaf directory as horizontal table
-                        self.filter.sort_files(&mut files);
-                        let config = leaf_config.unwrap();
-
-                        // Split files into rows based on column count
-                        let num_cols = config.column_widths.len().max(1);
-                        let mut file_idx = 0;
-
-                        while file_idx < files.len() {
-                            let row_files: Vec<_> = files
-                                .iter()
-                                .skip(file_idx)
-                                .take(num_cols)
-                                .collect();
-
-                            let is_last_row = file_idx + num_cols >= files.len();
-
-                            // Create the grid row content
-                            let grid_content =
-                                self.render_leaf_grid_row(&row_files, config);
-
-                            // Create row with appropriate tree params
-                            let tree_params = TreeParams::new(visual_depth, is_last_row);
-                            let row = Row {
-                                tree: tree_params,
-                                cells: None, // No table cells for leaf grid
-                                name: grid_content,
-                            };
-                            rows.push(row);
-
-                            file_idx += num_cols;
-                        }
-                    } else {
-                        // Normal recursive rendering
-                        self.add_files_to_table(
-                            table,
-                            rows,
-                            &files,
-                            visual_depth,
-                            color_scale_info,
-                            leaf_config,
-                        );
-                    }
+                    self.add_files_to_table(table, rows, &files, visual_depth, color_scale_info);
                     continue;
                 }
             }
@@ -601,6 +458,241 @@ impl<'a> Render<'a> {
                 let r = self.render_error(&error, params, path);
                 rows.push(r);
             }
+        }
+    }
+
+    /// New grouped rendering: consecutive files are grouped into grids
+    fn add_files_grouped<'dir>(
+        &self,
+        table: &mut Option<Table<'a>>,
+        rows: &mut Vec<Row>,
+        file_eggs: Vec<Egg<'dir>>,
+        depth: TreeDepth,
+        color_scale_info: Option<ColorScaleInformation>,
+    ) {
+        let total = file_eggs.len();
+
+        // First pass: identify groups (directories vs file runs)
+        // We need to know group boundaries to calculate is_last correctly
+        #[derive(Debug)]
+        enum Group {
+            Dir(usize),           // index of directory entry
+            Files(usize, usize),  // start, end indices of file run
+        }
+
+        let mut groups: Vec<Group> = Vec::new();
+        let mut idx = 0;
+
+        while idx < total {
+            let egg = &file_eggs[idx];
+            let is_dir = egg.dir.is_some()
+                || (self.opts.follow_links && egg.file.points_to_directory())
+                || (!self.opts.follow_links && egg.file.is_directory());
+
+            if is_dir {
+                groups.push(Group::Dir(idx));
+                idx += 1;
+            } else {
+                let start_idx = idx;
+                while idx < total {
+                    let e = &file_eggs[idx];
+                    let e_is_dir = e.dir.is_some()
+                        || (self.opts.follow_links && e.file.points_to_directory())
+                        || (!self.opts.follow_links && e.file.is_directory());
+                    if e_is_dir {
+                        break;
+                    }
+                    idx += 1;
+                }
+                groups.push(Group::Files(start_idx, idx));
+            }
+        }
+
+        // Convert to owned vector for consumption
+        let mut eggs: Vec<Option<Egg<'dir>>> = file_eggs.into_iter().map(Some).collect();
+        let num_groups = groups.len();
+
+        // Second pass: render each group
+        for (group_idx, group) in groups.into_iter().enumerate() {
+            let is_last_group = group_idx == num_groups - 1;
+
+            match group {
+                Group::Dir(idx) => {
+                    let egg = eggs[idx].take().unwrap();
+                    self.render_single_entry(table, rows, egg, depth, is_last_group, color_scale_info);
+                }
+                Group::Files(start, end) => {
+                    let file_eggs: Vec<_> = (start..end)
+                        .map(|i| eggs[i].take().unwrap())
+                        .collect();
+                    self.render_file_grid(table, rows, &file_eggs, depth, is_last_group);
+                }
+            }
+        }
+    }
+
+    /// Render a single directory entry (used in grouped mode)
+    fn render_single_entry<'dir>(
+        &self,
+        table: &mut Option<Table<'a>>,
+        rows: &mut Vec<Row>,
+        egg: Egg<'dir>,
+        depth: TreeDepth,
+        is_last: bool,
+        color_scale_info: Option<ColorScaleInformation>,
+    ) {
+        if let (Some(ref mut t), Some(row)) = (table.as_mut(), egg.table_row.as_ref()) {
+            t.add_widths(row);
+        }
+
+        let collapse_enabled = self
+            .recurse
+            .map(|r| r.collapse_single)
+            .unwrap_or(false);
+
+        // Handle directory with potential collapsing
+        let (file_name, effective_dir) = if let Some(dir) = egg.dir {
+            if collapse_enabled {
+                let chain = self.try_collapse_chain(egg.file.name.clone(), dir, depth.0);
+                if chain.names.len() > 1 {
+                    let collapsed_name = self.render_collapsed_name(&chain, egg.file);
+                    (collapsed_name, chain.final_dir)
+                } else {
+                    let name = self
+                        .file_style
+                        .for_file(egg.file, self.theme)
+                        .with_link_paths()
+                        .with_mount_details(self.opts.mounts)
+                        .paint()
+                        .promote();
+                    (name, chain.final_dir)
+                }
+            } else {
+                let name = self
+                    .file_style
+                    .for_file(egg.file, self.theme)
+                    .with_link_paths()
+                    .with_mount_details(self.opts.mounts)
+                    .paint()
+                    .promote();
+                (name, Some(dir))
+            }
+        } else {
+            let name = self
+                .file_style
+                .for_file(egg.file, self.theme)
+                .with_link_paths()
+                .with_mount_details(self.opts.mounts)
+                .paint()
+                .promote();
+            (name, None)
+        };
+
+        let tree_params = TreeParams::new(depth, is_last);
+        let row = Row {
+            tree: tree_params,
+            cells: egg.table_row,
+            name: file_name,
+        };
+        rows.push(row);
+
+        // Recurse into directory
+        if let Some(dir) = effective_dir {
+            let mut files: Vec<File<'_>> = dir
+                .files(
+                    self.filter.dot_filter,
+                    self.git,
+                    self.git_ignoring,
+                    egg.file.deref_links,
+                    egg.file.is_recursive_size(),
+                )
+                .collect();
+
+            self.filter
+                .filter_child_files(self.recurse.is_some(), &mut files);
+
+            if !files.is_empty() {
+                let visual_depth = depth.deeper();
+
+                for xattr in egg.xattrs {
+                    rows.push(self.render_xattr(xattr, TreeParams::new(visual_depth, false)));
+                }
+
+                for (error, path) in egg.errors {
+                    rows.push(self.render_error(
+                        &error,
+                        TreeParams::new(visual_depth, false),
+                        path,
+                    ));
+                }
+
+                self.add_files_to_table(table, rows, &files, visual_depth, color_scale_info);
+            }
+        }
+    }
+
+    /// Render a group of consecutive files as a grid
+    fn render_file_grid<'dir>(
+        &self,
+        table: &mut Option<Table<'a>>,
+        rows: &mut Vec<Row>,
+        file_group: &[Egg<'dir>],
+        depth: TreeDepth,
+        is_last_group: bool,
+    ) {
+        if file_group.is_empty() {
+            return;
+        }
+
+        // Add table widths for all files in the group
+        for egg in file_group {
+            if let (Some(ref mut t), Some(row)) = (table.as_mut(), egg.table_row.as_ref()) {
+                t.add_widths(row);
+            }
+        }
+
+        // Get available width for grid (terminal width minus tree indent)
+        let tree_indent = (depth.0 + 1) * 4; // 4 chars per depth level
+        let available_width = self.console_width.unwrap_or(80).saturating_sub(tree_indent);
+
+        // Build file name strings for the grid
+        let file_names: Vec<String> = file_group
+            .iter()
+            .map(|egg| {
+                self.file_style
+                    .for_file(egg.file, self.theme)
+                    .paint()
+                    .strings()
+                    .to_string()
+            })
+            .collect();
+
+        // Use term_grid to format the files
+        let grid = Grid::new(
+            file_names,
+            GridOptions {
+                filling: Filling::Spaces(1), // Match tree connector spacing
+                direction: Direction::LeftToRight,
+                width: available_width,
+            },
+        );
+
+        let grid_output = grid.to_string();
+        let lines: Vec<String> = grid_output.lines().map(|s| s.to_string()).collect();
+        let total_lines = lines.len();
+
+        // Create rows for each line of the grid
+        for (line_idx, line) in lines.into_iter().enumerate() {
+            let is_last_line = line_idx == total_lines - 1;
+            let is_last = is_last_group && is_last_line;
+
+            let tree_params = TreeParams::new(depth, is_last);
+            let row = Row {
+                tree: tree_params,
+                cells: None, // No table cells for grid rows
+                name: TextCell::paint(Style::default(), line),
+            };
+            rows.push(row);
         }
     }
 
@@ -797,108 +889,6 @@ impl<'a> Render<'a> {
             contents: bits.into(),
             width: crate::output::cell::DisplayWidth::from(total_width),
         }
-    }
-
-    /// Check if a list of files represents a "leaf" directory - one containing
-    /// only files (no subdirectories). Used for --table-leaves rendering.
-    fn is_leaf_directory(&self, files: &[File<'_>]) -> bool {
-        // A leaf directory has at least one file and no directories
-        !files.is_empty()
-            && !files.iter().any(|f| {
-                // Check if it's a directory (but not a symlink to a directory)
-                f.is_directory() && !f.is_link()
-            })
-    }
-
-    /// Render a row of the leaf grid (used when files are split across multiple rows).
-    fn render_leaf_grid_row(&self, files: &[&File<'_>], config: &LeafTableConfig) -> TextCell {
-        let mut result = TextCell::default();
-
-        for (idx, file) in files.iter().enumerate() {
-            // Get the rendered file name
-            let file_name = self.file_style.for_file(file, self.theme).paint();
-            let name_width = *file_name.width();
-
-            // Append the file name
-            result.append(file_name.promote());
-
-            // Add padding to reach column width (except for last item in row)
-            let col = idx % config.column_widths.len().max(1);
-            let col_width = config.column_widths.get(col).copied().unwrap_or(name_width);
-
-            if idx < files.len() - 1 {
-                let padding = col_width.saturating_sub(name_width) + config.column_spacing;
-                if padding > 0 {
-                    result.add_spaces(padding);
-                }
-            }
-        }
-
-        result
-    }
-
-    /// Collect file name widths from all leaf directories for global column calculation.
-    /// This is the first pass of two-pass rendering for --table-leaves.
-    fn collect_leaf_file_widths<'dir>(
-        &self,
-        src: &[File<'dir>],
-        depth: TreeDepth,
-    ) -> Vec<Vec<usize>> {
-        let mut all_widths = Vec::new();
-
-        let recurse = match self.recurse {
-            Some(r) if r.table_leaves => r,
-            _ => return all_widths,
-        };
-
-        for file in src {
-            if !file.is_directory() || file.is_link() {
-                continue;
-            }
-
-            if recurse.is_too_deep(depth.0) {
-                continue;
-            }
-
-            // Try to read the directory
-            let dir = match file.read_dir() {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            // Get files in this directory
-            let mut files: Vec<File<'_>> = dir
-                .files(
-                    self.filter.dot_filter,
-                    self.git,
-                    self.git_ignoring,
-                    file.deref_links,
-                    file.is_recursive_size(),
-                )
-                .collect();
-
-            self.filter
-                .filter_child_files(self.recurse.is_some(), &mut files);
-            self.filter.sort_files(&mut files);
-
-            if self.is_leaf_directory(&files) {
-                // Collect widths for this leaf directory
-                let widths: Vec<usize> = files
-                    .iter()
-                    .map(|f| {
-                        let name = self.file_style.for_file(f, self.theme).paint();
-                        *name.width()
-                    })
-                    .collect();
-                all_widths.push(widths);
-            } else {
-                // Recurse into subdirectories
-                let sub_widths = self.collect_leaf_file_widths(&files, depth.deeper());
-                all_widths.extend(sub_widths);
-            }
-        }
-
-        all_widths
     }
 
     #[must_use]
