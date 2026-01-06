@@ -2,9 +2,9 @@
 
 ## Overview
 
-A tree display mode that reduces vertical space usage through two techniques: collapsing single-child directory chains and displaying leaf nodes in a horizontal table layout.
+A tree display mode that reduces vertical space usage through two techniques: collapsing single-child directory chains and displaying files in a horizontal grid layout.
 
-## Feature 1: Single-Child Chain Collapsing
+## Feature 1: Single-Child Chain Collapsing (`--collapse-single`)
 
 **Behavior**: When a directory has exactly one child (which is also a directory), collapse the chain into a single path until reaching a directory with multiple children or containing files.
 
@@ -32,44 +32,54 @@ A tree display mode that reduces vertical space usage through two techniques: co
 - Collapsed paths use existing directory styling (e.g., trailing slash only if `--classify` is active)
 - When `--level` is set, use physical depth (each directory component counts), not display depth
 
-## Feature 2: Leaf Table Display
+## Feature 2: File Grid Display (`--table-leaves`)
 
-**Behavior**: When displaying the contents of a directory that contains only leaves (no nested structure), render items horizontally in columns like `ls` does, rather than one file per line with tree prefixes.
+**Behavior**: Render consecutive files within a directory as a horizontal grid, while directories still render as normal tree rows.
+
+**Key change from previous spec**: Directories with mixed content (both subdirs and files) now render subdirs as tree items and group consecutive files into grid rows.
 
 **Before:**
 ```
+project
+├── src
+│   └── main.rs
 ├── tests
-│   ├── a.py
-│   ├── test_authentication.py
-│   ├── test_b.py
-│   ├── test_config.py
-│   ├── x.py
-│   └── z.py
+│   └── test.rs
+├── Cargo.toml
+├── LICENSE
+└── README.md
 ```
 
-**After (correct):**
+**After (with `--group-directories-first`):**
 ```
+project
+├── src
+│   └── main.rs
 ├── tests
-│   └── a.py            test_authentication.py  test_b.py
-│       test_config.py  x.py                    z.py
+│   └── test.rs
+└── Cargo.toml LICENSE README.md
 ```
 
-**Wrong (columns don't align across rows):**
+**After (alphabetical, no dirs-first):**
 ```
+project
+├── Cargo.toml LICENSE
+├── src
+│   └── main.rs
 ├── tests
-│   └── a.py  test_authentication.py  test_b.py
-│       test_config.py  x.py  z.py
+│   └── test.rs
+└── z-notes.txt
 ```
 
 **Rules:**
-- Only applies to directories containing exclusively files (no subdirectories)
-- Preserve tree connector (└──) before the first file in the table
-- Respect terminal width for column wrapping
-- If table wraps to multiple lines, continuation lines align with first filename (after the connector)
-- Each column has fixed width based on the longest entry in that column (columns may have different widths from each other)
-- Column start positions (character indices) must be consistent across all tables in the output — not just within a single directory's table
-- Indentation aligns with parent directory's content area
-- Sorting follows existing tree sort order (alphabetical, by type, etc.)
+- Directories (including empty ones) always render as individual tree rows
+- Consecutive files in sort order are grouped into grid rows
+- Each grid uses eza's existing term_grid for layout (reuses grid mode code)
+- Grid width is calculated based on available terminal width minus tree indent
+- Each grid is laid out independently (no cross-grid column alignment)
+- Respect `--group-directories-first` flag for ordering
+- If grid wraps to multiple lines, continuation lines get appropriate tree connectors
+- The last item(s) in a directory use `└──`, others use `├──`
 
 ## Combined Example
 
@@ -90,69 +100,54 @@ project/
 │   └── unit/
 │       ├── test_config.rs
 │       └── test_utils.rs
-└── docs/
-    ├── README.md
-    └── CHANGELOG.md
+├── Cargo.toml
+├── LICENSE
+└── README.md
 ```
 
-**Compact output (correct):**
+**Compact output (with both flags and `--group-directories-first`):**
 ```
 project
 ├── src/lib/core
-│   └── auth.rs         config.rs   utils.rs
+│   └── auth.rs config.rs utils.rs
 ├── tests
 │   ├── integration/api
-│   │   └── test_auth.rs   test_users.rs
+│   │   └── test_auth.rs test_users.rs
 │   └── unit
-│       └── test_config.rs  test_utils.rs
-└── docs
-    └── CHANGELOG.md    README.md
-```
-
-Note: Column start positions are consistent across all tables (e.g., column 2 always starts at the same character index relative to the table's indentation level).
-
-**Wrong (inconsistent column positions across tables):**
-```
-project
-├── src/lib/core
-│   └── auth.rs  config.rs  utils.rs
-├── tests
-│   ├── integration/api
-│   │   └── test_auth.rs  test_users.rs
-│   └── unit
-│       └── test_config.rs  test_utils.rs
-└── docs
-    └── CHANGELOG.md  README.md
+│       └── test_config.rs test_utils.rs
+└── Cargo.toml LICENSE README.md
 ```
 
 ## Interaction with Existing Features
 
-- **Colors/icons**: Preserved in table layout (uses existing eza icon rendering)
-- **Git status**: Shown per-file in table layout
-- **`--long` mode**: Disable leaf table display when `--long` is active; chain collapsing still works
+- **Colors/icons**: Preserved in grid layout (uses existing eza rendering)
+- **Git status**: Shown per-file in grid layout
+- **`--long` mode**: Disable file grid display when `--long` is active; chain collapsing still works
 - **Hidden files**: Follow existing show/hide setting
 - **Depth limit (`--level`)**: Physical depth counting (each directory in chain counts separately)
+- **`--group-directories-first`**: Respected; affects where file grids appear in output
 
 ## Flags
 
 Two separate flags (no combined `--compact` for now):
 - `--collapse-single` for chain collapsing only
-- `--table-leaves` for horizontal leaf display only
+- `--table-leaves` for horizontal file grid display only
 
 Both flags require `--tree` mode to be active.
 
 ## Implementation Notes
 
-This feature should be implementable by combining eza's existing modes:
-- **Tree mode**: Already handles directory traversal, connectors, and indentation
-- **Grid/table mode**: Already handles column width calculation and alignment
+**Reuse existing grid code**: The file grid display should use eza's existing `term_grid` integration (same as grid mode) rather than reimplementing grid layout. This ensures consistent behavior and reduces code duplication.
 
-The hybrid mode reuses tree rendering for structure and grid rendering for leaf directories. Should work with eza's existing icon support.
+**No two-pass rendering**: Each directory's file grid is laid out independently based on its content and available width. Column positions may differ between grids at different tree depths or with different content.
 
-**Two-pass rendering**: Required for consistent column alignment across all leaf tables:
-1. **Pass 1**: Walk the entire tree to collect all filenames from leaf directories
-2. Calculate global column widths based on longest filename per column across ALL leaf tables
-3. **Pass 2**: Render the tree using pre-calculated column widths
+**Rendering algorithm for a directory:**
+1. Sort entries (respecting `--group-directories-first` if set)
+2. Iterate through entries:
+   - If directory: render as normal tree row, recurse
+   - If file: collect into current file group
+   - When hitting a directory or end: flush file group as grid row(s)
+3. Grid rows use appropriate tree connectors (├── or └──) based on position
 
 ## Required Test Cases
 
@@ -170,29 +165,31 @@ Tests must cover all edge cases using the `trycmd` framework (`tests/cmd/`).
 8. **Root-level single child**: Single directory at root should still show correctly
 9. **Chain with `--long`**: Chain collapsing works with detailed output
 
-### Leaf Table Tests (`--table-leaves`)
+### File Grid Tests (`--table-leaves`)
 
-1. **Basic leaf table**: Directory with only files renders horizontally
-2. **Column alignment across tables**: Multiple leaf directories have consistent column positions
-3. **Terminal width wrapping**: Wide content wraps to multiple lines correctly
-4. **Single file leaf**: Directory with one file (edge case for table layout)
-5. **Mixed leaf/non-leaf siblings**: Some dirs are leaves, some have subdirs
-6. **Continuation line alignment**: Wrapped rows align with first filename
-7. **Icons preserved**: `--icons` works with leaf table layout
-8. **Colors preserved**: File type colors work in table layout
-9. **Sorting in table**: Files sorted correctly within table layout
-10. **`--long` disables table**: With `--long`, falls back to vertical list
+1. **Basic file grid**: Directory with only files renders horizontally
+2. **Mixed content**: Directory with subdirs and files; files grouped into grid
+3. **Dirs-first ordering**: With `--group-directories-first`, files grid at end
+4. **Interspersed files**: Without dirs-first, multiple file grids between dirs
+5. **Terminal width wrapping**: Wide content wraps to multiple lines correctly
+6. **Single file**: Directory with one file (edge case)
+7. **Empty directories**: Render as individual rows, not in grid
+8. **Continuation line connectors**: Wrapped rows have correct tree connectors
+9. **Icons preserved**: `--icons` works with grid layout
+10. **Colors preserved**: File type colors work in grid layout
+11. **Sorting in grid**: Files sorted correctly within grid
+12. **`--long` disables grid**: With `--long`, falls back to vertical list
 
 ### Combined Tests (both flags)
 
-1. **Chain + leaf table**: Collapsed chain ending in leaf directory
-2. **Complex tree**: Multiple chains and leaf tables in one output
-3. **Deep nesting**: 5+ level chains with leaf tables at various depths
+1. **Chain + file grid**: Collapsed chain with mixed content at end
+2. **Complex tree**: Multiple chains and file grids in one output
+3. **Deep nesting**: 5+ level chains with file grids at various depths
 
 ### Edge Cases
 
 1. **Empty tree**: Directory with no children
 2. **Only symlinks**: Directory containing only symlinks
-3. **Hidden files**: `--all` shows hidden files in leaf tables
-4. **Very long filenames**: Column width calculation with long names
+3. **Hidden files**: `--all` shows hidden files in grids
+4. **Very long filenames**: Grid wrapping with long names
 5. **Unicode filenames**: Proper width calculation for unicode
