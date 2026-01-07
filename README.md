@@ -104,6 +104,8 @@ eza’s options are almost, but not quite, entirely unlike `ls`’s. Quick overv
 - **-l**, **--long**: display extended details and attributes
 - **-R**, **--recurse**: recurse into directories
 - **-T**, **--tree**: recurse into directories as a tree
+- **--collapse-single**: in tree view, collapse directories with a single child onto one line
+- **--table-leaves**: in tree view, display leaf files in a horizontal grid
 - **-x**, **--across**: sort the grid across, rather than downwards
 - **-F**, **--classify=(when)**: display type indicator by file names (always, auto, never)
 - **--colo[u]r=(when)**: when to use terminal colours (always, auto, never)

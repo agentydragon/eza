@@ -83,6 +83,12 @@ When used without a value, defaults to ‘`automatic`’.
 `-T`, `--tree`
 : Recurse into directories as a tree.
 
+`--collapse-single`
+: In tree view, collapse directories that contain a single child directory onto one line (e.g., `src/util/` instead of nested entries).
+
+`--table-leaves`
+: In tree view, display leaf files (files in directories with no subdirectories) in a horizontal grid layout instead of vertically.
+
 `--follow-symlinks`
 : Drill down into symbolic links that point to directories.
 

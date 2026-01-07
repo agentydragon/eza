@@ -32,11 +32,53 @@ A tree display mode that reduces vertical space usage through two techniques: co
 - Collapsed paths use existing directory styling (e.g., trailing slash only if `--classify` is active)
 - When `--level` is set, use physical depth (each directory component counts), not display depth
 
-## Feature 2: File Grid Display (`--table-leaves`)
+## Feature 2: Compact File Display (`--table-leaves`)
 
-**Behavior**: Render consecutive files within a directory as a horizontal grid, while directories still render as normal tree rows.
+**Behavior**: Display files more compactly using two strategies:
 
-**Key change from previous spec**: Directories with mixed content (both subdirs and files) now render subdirs as tree items and group consecutive files into grid rows.
+1. **Inline files**: When a directory's contents (files and empty dirs, excluding non-empty subdirs) fit on one line, display them inline with the directory using `─` as separator
+2. **Grid files**: Otherwise, render consecutive files as a horizontal grid
+
+**Key principle**: Maximize vertical space savings while maintaining readability.
+
+### Inline Display
+
+When a directory contains only files/empty dirs (no subdirectories with content), and they fit on one line:
+
+**Before:**
+```
+│   ├── images
+│   │   └── screenshots.png
+│   ├── tapes
+│   │   └── demo.tape
+```
+
+**After:**
+```
+│   ├── images ─ screenshots.png
+│   ├── tapes ─ demo.tape
+```
+
+**Multiple files inline:**
+```
+│   ├── config ─ dev.toml prod.toml test.toml
+```
+
+**Combined with chain collapsing (`--collapse-single`):**
+```
+│   ├── src/images ─ screenshot.png
+```
+
+**Rules for inline display:**
+- Applies when directory has no non-empty subdirectories
+- All files/empty dirs must fit on remaining line width after directory name
+- Uses `─` (box drawing horizontal) as separator between directory and contents
+- Files are space-separated within the inline display
+- If contents don't fit, fall back to normal tree rendering (not grid)
+
+### Grid Display
+
+For directories with mixed content (subdirs and files), files are grouped into grid rows:
 
 **Before:**
 ```
@@ -71,7 +113,7 @@ project
 └── z-notes.txt
 ```
 
-**Rules:**
+**Rules for grid display:**
 - Directories (including empty ones) always render as individual tree rows
 - Consecutive files in sort order are grouped into grid rows
 - Each grid uses eza's existing term_grid for layout (reuses grid mode code)
@@ -108,15 +150,14 @@ project/
 **Compact output (with both flags and `--group-directories-first`):**
 ```
 project
-├── src/lib/core
-│   └── auth.rs config.rs utils.rs
+├── src/lib/core ─ auth.rs config.rs utils.rs
 ├── tests
-│   ├── integration/api
-│   │   └── test_auth.rs test_users.rs
-│   └── unit
-│       └── test_config.rs test_utils.rs
+│   ├── integration/api ─ test_auth.rs test_users.rs
+│   └── unit ─ test_config.rs test_utils.rs
 └── Cargo.toml LICENSE README.md
 ```
+
+Note: The leaf directories (`core`, `api`, `unit`) use inline display because they contain only files. The root `project` directory uses grid display because it has mixed content (subdirs + files).
 
 ## Interaction with Existing Features
 
@@ -143,11 +184,21 @@ Both flags require `--tree` mode to be active.
 
 **Rendering algorithm for a directory:**
 1. Sort entries (respecting `--group-directories-first` if set)
-2. Iterate through entries:
+2. Check if inline display is possible:
+   - Are all children files or empty directories (no non-empty subdirs)?
+   - Calculate total width: `dir_name + " ─ " + space-separated file names`
+   - Does it fit in remaining terminal width (after tree indent)?
+   - If yes: render as single line `├── dirname ─ file1 file2 file3`
+3. If not inline, iterate through entries:
    - If directory: render as normal tree row, recurse
    - If file: collect into current file group
    - When hitting a directory or end: flush file group as grid row(s)
-3. Grid rows use appropriate tree connectors (├── or └──) based on position
+4. Grid rows use appropriate tree connectors (├── or └──) based on position
+
+**Inline display rendering:**
+- Separator is ` ─ ` (space, box-drawing horizontal U+2500, space)
+- Files are separated by single space
+- Use existing file rendering (colors, icons) for each file in inline display
 
 ## Required Test Cases
 
@@ -165,7 +216,18 @@ Tests must cover all edge cases using the `trycmd` framework (`tests/cmd/`).
 8. **Root-level single child**: Single directory at root should still show correctly
 9. **Chain with `--long`**: Chain collapsing works with detailed output
 
-### File Grid Tests (`--table-leaves`)
+### Inline Display Tests (`--table-leaves`)
+
+1. **Basic inline**: Directory with single file → `dir ─ file.txt`
+2. **Multiple files inline**: Directory with files that fit → `dir ─ a.txt b.txt c.txt`
+3. **Inline with empty dirs**: Empty subdirs inline with files → `dir ─ empty/ file.txt`
+4. **Fallback to tree**: Files too wide for line → normal tree rendering
+5. **Inline + chain collapse**: `a/b/c` with single file → `a/b/c ─ file.txt`
+6. **No inline for mixed content**: Directory with non-empty subdir → no inline, use grid/tree
+7. **Icons in inline**: `--icons` preserved in inline display
+8. **Colors in inline**: File type colors work in inline display
+
+### Grid Display Tests (`--table-leaves`)
 
 1. **Basic file grid**: Directory with only files renders horizontally
 2. **Mixed content**: Directory with subdirs and files; files grouped into grid
@@ -182,14 +244,16 @@ Tests must cover all edge cases using the `trycmd` framework (`tests/cmd/`).
 
 ### Combined Tests (both flags)
 
-1. **Chain + file grid**: Collapsed chain with mixed content at end
-2. **Complex tree**: Multiple chains and file grids in one output
-3. **Deep nesting**: 5+ level chains with file grids at various depths
+1. **Chain + inline**: Collapsed chain with files that fit inline
+2. **Chain + grid**: Collapsed chain with mixed content at end (uses grid)
+3. **Complex tree**: Multiple chains, inline displays, and grids in one output
+4. **Deep nesting**: 5+ level chains with inline/grid at various depths
 
 ### Edge Cases
 
 1. **Empty tree**: Directory with no children
 2. **Only symlinks**: Directory containing only symlinks
-3. **Hidden files**: `--all` shows hidden files in grids
-4. **Very long filenames**: Grid wrapping with long names
+3. **Hidden files**: `--all` shows hidden files in grids/inline
+4. **Very long filenames**: Fallback behavior with long names
 5. **Unicode filenames**: Proper width calculation for unicode
+6. **Separator character**: `─` renders correctly in all terminals

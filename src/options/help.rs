@@ -24,6 +24,8 @@ DISPLAY OPTIONS
   -x, --across               sort the grid across, rather than downwards
   -R, --recurse              recurse into directories
   -T, --tree                 recurse into directories as a tree
+  --collapse-single          in tree, collapse dirs with single child onto one line
+  --table-leaves             in tree, display leaf files in a horizontal grid
   -X, --dereference          dereference symbolic links when displaying information
   -F, --classify=WHEN        display type indicator by file names (always, auto, never)
   --colo[u]r=WHEN            when to use terminal colours (always, auto, never)
