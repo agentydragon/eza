@@ -1,0 +1,4 @@
+tests/compact/inline_fallback
+└── src
+    ├── lib ── util.rs
+    └── main.rs

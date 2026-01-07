@@ -85,7 +85,7 @@ use crate::output::cell::TextCell;
 use crate::output::color_scale::{ColorScaleInformation, ColorScaleOptions};
 use crate::output::file_name::Options as FileStyle;
 use crate::output::table::{Options as TableOptions, Row as TableRow, Table};
-use crate::output::tree::{TreeDepth, TreeParams, TreeTrunk};
+use crate::output::tree::{TreeDepth, TreeParams, TreePart, TreeTrunk, TREE_PART_WIDTH};
 use crate::theme::Theme;
 
 /// Information about a collapsed directory chain.
@@ -588,15 +588,7 @@ impl<'a> Render<'a> {
             (name, None)
         };
 
-        let tree_params = TreeParams::new(depth, is_last);
-        let row = Row {
-            tree: tree_params,
-            cells: egg.table_row,
-            name: file_name,
-        };
-        rows.push(row);
-
-        // Recurse into directory
+        // Recurse into directory (or try inline display)
         if let Some(dir) = effective_dir {
             let mut files: Vec<File<'_>> = dir
                 .files(
@@ -610,6 +602,26 @@ impl<'a> Render<'a> {
 
             self.filter
                 .filter_child_files(self.recurse.is_some(), &mut files);
+
+            // Sort files for consistent ordering
+            self.filter.sort_files(&mut files);
+
+            // Try inline display if all children are files/empty dirs
+            if !files.is_empty() {
+                if let Some(inline_row) = self.try_inline_display(&file_name, &files, depth, is_last) {
+                    rows.push(inline_row);
+                    return;
+                }
+            }
+
+            // Normal rendering: directory on its own row, then recurse
+            let tree_params = TreeParams::new(depth, is_last);
+            let row = Row {
+                tree: tree_params,
+                cells: egg.table_row,
+                name: file_name,
+            };
+            rows.push(row);
 
             if !files.is_empty() {
                 let visual_depth = depth.deeper();
@@ -628,7 +640,102 @@ impl<'a> Render<'a> {
 
                 self.add_files_to_table(table, rows, &files, visual_depth, color_scale_info);
             }
+        } else {
+            // No directory contents, just render the name
+            let tree_params = TreeParams::new(depth, is_last);
+            let row = Row {
+                tree: tree_params,
+                cells: egg.table_row,
+                name: file_name,
+            };
+            rows.push(row);
         }
+    }
+
+    /// Try to render a directory with its contents inline (e.g., "dir ─ file1 file2")
+    /// Returns Some(Row) if inline display is possible, None otherwise.
+    fn try_inline_display(
+        &self,
+        dir_name: &TextCell,
+        files: &[File<'_>],
+        depth: TreeDepth,
+        is_last: bool,
+    ) -> Option<Row> {
+        // Check if all children are files or empty directories
+        for file in files {
+            if file.is_directory() {
+                // Check if directory is empty
+                if let Ok(dir) = file.read_dir() {
+                    let child_files: Vec<_> = dir
+                        .files(
+                            self.filter.dot_filter,
+                            self.git,
+                            self.git_ignoring,
+                            false,
+                            false,
+                        )
+                        .collect();
+                    if !child_files.is_empty() {
+                        // Non-empty directory - can't inline
+                        return None;
+                    }
+                } else {
+                    // Can't read directory - can't inline
+                    return None;
+                }
+            }
+        }
+
+        // Calculate tree indent: TREE_PART_WIDTH chars per depth level
+        let tree_indent = (depth.0 + 1) * TREE_PART_WIDTH;
+        let available_width = self.console_width.unwrap_or(80).saturating_sub(tree_indent);
+
+        // Build file names and calculate total width
+        let file_cells: Vec<TextCell> = files
+            .iter()
+            .map(|f| {
+                self.file_style
+                    .for_file(f, self.theme)
+                    .paint()
+                    .promote()
+            })
+            .collect();
+
+        // Total width: dir_name + separator + file names with spaces between
+        let files_width: usize = file_cells.iter().map(|c| *c.width).sum::<usize>()
+            + file_cells.len().saturating_sub(1); // spaces between files
+
+        let total_width = *dir_name.width + TREE_PART_WIDTH + files_width;
+
+        if total_width > available_width {
+            // Doesn't fit - fall back to normal rendering
+            return None;
+        }
+
+        // Build the inline display
+        let mut combined = dir_name.clone();
+
+        // Add separator using tree/punctuation style (same as tree connectors)
+        let tree_style = self.theme.ui.punctuation.unwrap_or_default();
+        combined.push(
+            tree_style.paint(TreePart::Inline.ascii_art().to_string()),
+            TREE_PART_WIDTH,
+        );
+
+        // Add files with spaces between them
+        for (i, cell) in file_cells.into_iter().enumerate() {
+            if i > 0 {
+                combined.push(Style::default().paint(" ".to_string()), 1);
+            }
+            combined.append(cell);
+        }
+
+        let tree_params = TreeParams::new(depth, is_last);
+        Some(Row {
+            tree: tree_params,
+            cells: None,
+            name: combined,
+        })
     }
 
     /// Render a group of consecutive files as a grid
@@ -652,7 +759,7 @@ impl<'a> Render<'a> {
         }
 
         // Get available width for grid (terminal width minus tree indent)
-        let tree_indent = (depth.0 + 1) * 4; // 4 chars per depth level
+        let tree_indent = (depth.0 + 1) * TREE_PART_WIDTH;
         let available_width = self.console_width.unwrap_or(80).saturating_sub(tree_indent);
 
         // Build file name strings for the grid

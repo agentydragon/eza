@@ -1,3 +1,2 @@
 tests/compact/leaf_basic
-└── docs
-    └── guide.txt notes.txt readme.txt
+└── docs ── guide.txt notes.txt readme.txt

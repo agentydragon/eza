@@ -55,24 +55,24 @@ When a directory contains only files/empty dirs (no subdirectories with content)
 
 **After:**
 ```
-│   ├── images ─ screenshots.png
-│   ├── tapes ─ demo.tape
+│   ├── images ── screenshots.png
+│   ├── tapes ── demo.tape
 ```
 
 **Multiple files inline:**
 ```
-│   ├── config ─ dev.toml prod.toml test.toml
+│   ├── config ── dev.toml prod.toml test.toml
 ```
 
 **Combined with chain collapsing (`--collapse-single`):**
 ```
-│   ├── src/images ─ screenshot.png
+│   ├── src/images ── screenshot.png
 ```
 
 **Rules for inline display:**
 - Applies when directory has no non-empty subdirectories
 - All files/empty dirs must fit on remaining line width after directory name
-- Uses `─` (box drawing horizontal) as separator between directory and contents
+- Uses ` ── ` (space, two box drawing horizontals, space) as separator - same width as tree connectors
 - Files are space-separated within the inline display
 - If contents don't fit, fall back to normal tree rendering (not grid)
 
@@ -150,10 +150,10 @@ project/
 **Compact output (with both flags and `--group-directories-first`):**
 ```
 project
-├── src/lib/core ─ auth.rs config.rs utils.rs
+├── src/lib/core ── auth.rs config.rs utils.rs
 ├── tests
-│   ├── integration/api ─ test_auth.rs test_users.rs
-│   └── unit ─ test_config.rs test_utils.rs
+│   ├── integration/api ── test_auth.rs test_users.rs
+│   └── unit ── test_config.rs test_utils.rs
 └── Cargo.toml LICENSE README.md
 ```
 
@@ -186,9 +186,9 @@ Both flags require `--tree` mode to be active.
 1. Sort entries (respecting `--group-directories-first` if set)
 2. Check if inline display is possible:
    - Are all children files or empty directories (no non-empty subdirs)?
-   - Calculate total width: `dir_name + " ─ " + space-separated file names`
+   - Calculate total width: `dir_name + " ── " + space-separated file names`
    - Does it fit in remaining terminal width (after tree indent)?
-   - If yes: render as single line `├── dirname ─ file1 file2 file3`
+   - If yes: render as single line `├── dirname ── file1 file2 file3`
 3. If not inline, iterate through entries:
    - If directory: render as normal tree row, recurse
    - If file: collect into current file group
@@ -196,9 +196,10 @@ Both flags require `--tree` mode to be active.
 4. Grid rows use appropriate tree connectors (├── or └──) based on position
 
 **Inline display rendering:**
-- Separator is ` ─ ` (space, box-drawing horizontal U+2500, space)
+- Separator is ` ── ` (space, two box-drawing horizontals U+2500, space) - 4 chars total, matching `TREE_PART_WIDTH`
 - Files are separated by single space
 - Use existing file rendering (colors, icons) for each file in inline display
+- Separator uses tree/punctuation style for consistent appearance with tree connectors
 
 ## Required Test Cases
 
@@ -218,11 +219,11 @@ Tests must cover all edge cases using the `trycmd` framework (`tests/cmd/`).
 
 ### Inline Display Tests (`--table-leaves`)
 
-1. **Basic inline**: Directory with single file → `dir ─ file.txt`
-2. **Multiple files inline**: Directory with files that fit → `dir ─ a.txt b.txt c.txt`
-3. **Inline with empty dirs**: Empty subdirs inline with files → `dir ─ empty/ file.txt`
+1. **Basic inline**: Directory with single file → `dir ── file.txt`
+2. **Multiple files inline**: Directory with files that fit → `dir ── a.txt b.txt c.txt`
+3. **Inline with empty dirs**: Empty subdirs inline with files → `dir ── empty/ file.txt`
 4. **Fallback to tree**: Files too wide for line → normal tree rendering
-5. **Inline + chain collapse**: `a/b/c` with single file → `a/b/c ─ file.txt`
+5. **Inline + chain collapse**: `a/b/c` with single file → `a/b/c ── file.txt`
 6. **No inline for mixed content**: Directory with non-empty subdir → no inline, use grid/tree
 7. **Icons in inline**: `--icons` preserved in inline display
 8. **Colors in inline**: File type colors work in inline display

@@ -1,2 +1,1 @@
-tests/compact/combined/a/b
-└── file1.txt file2.txt file3.txt
+tests/compact/combined/a/b ── file1.txt file2.txt file3.txt

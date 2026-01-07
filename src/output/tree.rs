@@ -57,7 +57,13 @@ pub enum TreePart {
 
     /// Not the rightmost column, and the directory *has* finished.
     Blank,
+
+    /// Inline connector for directory contents (e.g., "dir ─── file").
+    Inline,
 }
+
+/// Width of tree connector strings in display columns.
+pub const TREE_PART_WIDTH: usize = 4;
 
 impl TreePart {
     /// Turn this tree part into ASCII-licious box drawing characters!
@@ -69,7 +75,23 @@ impl TreePart {
             Self::Line    => "│   ",
             Self::Corner  => "└── ",
             Self::Blank   => "    ",
+            Self::Inline  => " ── ",
         };
+    }
+}
+
+#[cfg(test)]
+mod tree_part_tests {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn tree_part_widths_match_constant() {
+        assert_eq!(TreePart::Edge.ascii_art().width(), TREE_PART_WIDTH);
+        assert_eq!(TreePart::Line.ascii_art().width(), TREE_PART_WIDTH);
+        assert_eq!(TreePart::Corner.ascii_art().width(), TREE_PART_WIDTH);
+        assert_eq!(TreePart::Blank.ascii_art().width(), TREE_PART_WIDTH);
+        assert_eq!(TreePart::Inline.ascii_art().width(), TREE_PART_WIDTH);
     }
 }
 
